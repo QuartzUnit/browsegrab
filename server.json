@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ArkNill/browsegrab",
+  "title": "Browsegrab",
+  "description": "Token-efficient browser agent for local LLMs. Playwright + accessibility tree + MarkGrab.",
+  "repository": {
+    "url": "https://github.com/QuartzUnit/browsegrab",
+    "source": "github"
+  },
+  "version": "0.1.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "browsegrab",
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
