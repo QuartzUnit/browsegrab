@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "browsegrab"
+version = "0.1.1"
+description = "Token-efficient browser agent for local LLMs — Playwright + accessibility tree + MarkGrab, MCP native."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "QuartzUnit" },
+]
+keywords = [
+    "browser",
+    "automation",
+    "agent",
+    "llm",
+    "mcp",
+    "playwright",
+    "accessibility",
+    "local-llm",
+    "web-agent",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+dependencies = [
+    "playwright>=1.49",
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+content = ["markgrab>=0.1.2"]
+mcp = ["fastmcp>=2.0"]
+cli = ["click>=8.0", "rich>=13.0"]
+all = ["browsegrab[content,mcp,cli]"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/QuartzUnit/browsegrab"
+Repository = "https://github.com/QuartzUnit/browsegrab"
+Issues = "https://github.com/QuartzUnit/browsegrab/issues"
+
+[project.scripts]
+browsegrab = "browsegrab.__main__:main"
+browsegrab-mcp = "browsegrab.mcp_server:main"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end tests requiring Playwright browser (deselect with '-m not e2e')",
+]
