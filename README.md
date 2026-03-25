@@ -1,5 +1,7 @@
 # browsegrab
 
+> [한국어 문서](README.ko.md)
+
 > Token-efficient browser agent for local LLMs — Playwright + accessibility tree + MarkGrab, MCP native.
 
 **browsegrab** is a lightweight browser automation library designed for local LLMs (8B-35B parameters). It combines Playwright's accessibility tree with [MarkGrab](https://github.com/QuartzUnit/markgrab)'s HTML-to-markdown conversion to achieve **5-8x fewer tokens per step** compared to alternatives like browser-use.
@@ -192,4 +194,4 @@ pytest tests/ -v
 
 [MIT](LICENSE)
 
-<!-- mcp-name: io.github.ArkNill/browsegrab -->
+<!-- mcp-name: io.github.QuartzUnit/browsegrab -->
