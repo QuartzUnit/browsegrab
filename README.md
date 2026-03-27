@@ -99,16 +99,31 @@ Claude Desktop / Cursor / VS Code config:
 
 ## How It Works
 
+### Agent Browse Loop
+
+```mermaid
+flowchart LR
+    A["🌐 URL + Goal"] --> B["Navigate"]
+    B --> C["AX Tree Snapshot\n~200–500 tokens"]
+    C --> D{"LLM\nDecision"}
+    D -->|"click / type / scroll"| E["Execute Action"]
+    E --> C
+    D -->|"goal reached"| F["Extract Content\n(MarkGrab)"]
+    F --> G["✅ Result"]
+```
+
+### Token Efficiency
+
 browsegrab separates **structure** (accessibility tree) from **content** (MarkGrab markdown), sending only what the LLM needs:
 
-```
-Raw HTML
-├── Structure: Accessibility tree → interactive elements → [ref=eN]
-│   → ~200-500 tokens
-└── Content: MarkGrab → clean markdown (on-demand)
-    → ~300-800 tokens
-
-Combined: ~500-1,300 tokens per step
+```mermaid
+flowchart TD
+    A["Raw HTML"] --> B["Accessibility Tree"]
+    A --> C["MarkGrab Markdown"]
+    B --> D["Structure: ~200–500 tokens\nInteractive elements with ref IDs"]
+    C --> E["Content: ~300–800 tokens\nClean markdown · on-demand"]
+    D --> F["Combined: ~500–1,300 tokens/step\n⚡ 5–8× fewer than browser-use"]
+    E --> F
 ```
 
 ### Token efficiency (measured)
