@@ -1,0 +1,58 @@
+# browsegrab
+
+> Token-efficient browser agent for local LLMs — Playwright + accessibility tree + MarkGrab, MCP native.
+
+## Purpose
+
+browsegrab provides programmatic browser automation optimized for low-token-budget LLM agents. It renders pages via Playwright and exposes the accessibility tree (~500-1,500 tokens per step) instead of raw HTML, with optional MarkGrab integration for clean markdown extraction. Elements are referenced by short IDs (e1, e2, ...) for compact action commands.
+
+## Capabilities
+
+- **Accessibility tree snapshots**: Navigate to a URL and get a token-efficient tree representation of the page
+- **Element interaction**: Click, type, scroll using short ref IDs from the accessibility tree
+- **Content extraction**: Extract page content as compressed DOM (AX tree + markdown via MarkGrab)
+- **Agentic browsing**: LLM-driven multi-step browsing toward an objective with action planning
+- **MCP server**: 8 browser automation tools exposed via FastMCP (stdio transport)
+
+## Installation
+
+```
+pip install browsegrab          # core (Playwright + httpx)
+pip install browsegrab[cli]     # CLI (click + rich)
+pip install browsegrab[mcp]     # MCP server (fastmcp)
+pip install browsegrab[content] # content extraction (markgrab)
+pip install browsegrab[all]     # everything
+```
+
+## Quick Use
+
+### CLI
+
+```bash
+browsegrab snapshot https://example.com          # accessibility tree snapshot
+browsegrab extract https://example.com           # extract content as markdown
+browsegrab browse https://example.com "find the pricing page"  # agentic browse
+```
+
+### Python
+
+```python
+from browsegrab import BrowseGrabConfig, BrowseSession
+
+async with BrowseSession(BrowseGrabConfig.from_env()) as session:
+    await session.navigate("https://example.com")
+    snap = await session.snapshot()          # SnapshotResult
+    content = await session.extract_content() # markdown string
+    result = await session.browse("https://example.com", "find pricing")  # BrowseResult
+```
+
+### MCP
+
+Server: `browsegrab-mcp` (stdio transport)
+Tools: `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_scroll`, `browser_extract_content`, `browser_go_back`, `browser_wait`
+
+## Links
+
+- Docs: https://github.com/QuartzUnit/browsegrab
+- PyPI: https://pypi.org/project/browsegrab/
+- Source: https://github.com/QuartzUnit/browsegrab
