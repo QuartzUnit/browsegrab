@@ -1,1196 +1,183 @@
-# browsegrab
-
-> Token-efficient browser agent for local LLMs — Playwright + accessibility tree + MarkGrab, MCP native.
-
-## Purpose
-
-browsegrab provides programmatic browser automation optimized for low-token-budget LLM agents. It renders pages via Playwright and exposes the accessibility tree (~500-1,500 tokens per step) instead of raw HTML, with optional MarkGrab integration for clean markdown extraction. Elements are referenced by short IDs (e1, e2, ...) for compact action commands.
-
-The core architecture uses a dual-path DOM compression strategy:
-- **Path A (Structure)**: Accessibility tree via Playwright's `locator.aria_snapshot()` — interactive elements get short ref IDs for LLM action targeting.
-- **Path B (Content)**: MarkGrab markdown extraction (on-demand) — clean text for reading/summarization tasks.
-
-This combination achieves ~500-1,300 tokens per step versus 4K-10K tokens for raw HTML or screenshot-based alternatives.
-
-## Capabilities
-
-- **Accessibility tree snapshots**: Navigate to a URL and get a token-efficient tree representation of the page with ref IDs for all interactive elements
-- **Element interaction**: Click, type, scroll, go back, wait — all using short ref IDs (e1, e2, ...) from the accessibility tree
-- **Content extraction**: Extract page content as compressed DOM (AX tree + markdown via MarkGrab)
-- **Agentic browsing**: LLM-driven multi-step browsing toward an objective with action planning, loop detection, history compression, and success pattern caching
-- **MCP server**: 8 browser automation tools exposed via FastMCP (stdio transport)
-- **4-strategy selector resolution**: ref -> ARIA role -> CSS -> text fallback chain for robust element targeting
-- **5-stage JSON parser**: Robust extraction of action JSON from LLM responses (direct, code block, brace boundary, key-value cleanup, regex)
-- **Loop detection**: Sliding-window pattern detection prevents infinite agent loops
-- **Success pattern cache**: Domain-based file cache stores successful action sequences for workflow replay
-- **3 LLM providers**: vLLM, Ollama, OpenAI-compatible — all via httpx, no SDK dependencies
-
-## Installation
-
+# browsegrab — Full API Reference
+> Token-efficient browser agent for local LLMs — Playwright + AX tree + MarkGrab, MCP native.
+Install: `pip install browsegrab[all]` (extras: cli, mcp, content) then `playwright install chromium`
+Requires: Python >=3.11, playwright >=1.49, httpx >=0.28
+## Configuration
+All configs load from env via `from_env()`. Prefix: `BROWSEGRAB_`.
+### BrowseGrabConfig
+Top-level aggregate. Fields: `browser: BrowserConfig`, `llm: LLMConfig`, `snapshot: SnapshotConfig`, `agent: AgentConfig`.
+### BrowserConfig
+| Param | Type | Default | Env var suffix |
+|-------|------|---------|---------------|
+| headless | bool | True | BROWSER_HEADLESS |
+| timeout_ms | int | 30000 | BROWSER_TIMEOUT_MS |
+| viewport_width | int | 1280 | BROWSER_VIEWPORT_WIDTH |
+| viewport_height | int | 720 | BROWSER_VIEWPORT_HEIGHT |
+| user_agent | str\|None | None | BROWSER_USER_AGENT |
+| locale | str | "en-US" | BROWSER_LOCALE |
+| ignore_https_errors | bool | False | BROWSER_IGNORE_HTTPS_ERRORS |
+### LLMConfig
+| Param | Type | Default | Env var suffix |
+|-------|------|---------|---------------|
+| provider | "vllm"\|"ollama"\|"openai" | "vllm" | LLM_PROVIDER |
+| base_url | str | http://localhost:8000/v1 | LLM_BASE_URL |
+| model | str | Qwen/Qwen3.5-32B-AWQ | LLM_MODEL |
+| api_key | str\|None | None | LLM_API_KEY |
+| timeout_s | int | 60 | LLM_TIMEOUT_S |
+| max_retries | int | 2 | LLM_MAX_RETRIES |
+| temperature | float | 0.0 | LLM_TEMPERATURE |
+| max_tokens | int | 1024 | LLM_MAX_TOKENS |
+### SnapshotConfig
+| Param | Type | Default | Env var suffix |
+|-------|------|---------|---------------|
+| max_snapshot_length | int | 5000 | SNAPSHOT_MAX_LENGTH |
+| max_content_length | int | 3000 | SNAPSHOT_MAX_CONTENT_LENGTH |
+| include_links | bool | True | SNAPSHOT_INCLUDE_LINKS |
+| filter_interactive_only | bool | False | SNAPSHOT_INTERACTIVE_ONLY |
+### AgentConfig
+| Param | Type | Default | Env var suffix |
+|-------|------|---------|---------------|
+| max_steps | int | 10 | AGENT_MAX_STEPS |
+| history_max_entries | int | 5 | AGENT_HISTORY_MAX |
+| cache_dir | str | ~/.cache/browsegrab | AGENT_CACHE_DIR |
+| enable_cache | bool | True | AGENT_ENABLE_CACHE |
+| loop_detection_window | int | 3 | AGENT_LOOP_WINDOW |
+## BrowseSession
+Main orchestrator. Async context manager. `BrowseSession(config?, manager?)`
+### Methods
+`navigate(url, **expectation) -> ActionResult` — Go to URL.
+`snapshot() -> SnapshotResult` — AX tree snapshot, rebuilds RefMap.
+`click(ref, **expectation) -> ActionResult` — Click element by ref ID.
+`type(ref, text, clear=True, submit=False, **expectation) -> ActionResult` — Type into element.
+`scroll(direction="down", amount=500, ref=None, **expectation) -> ActionResult` — Scroll page/element. direction: up|down|left|right.
+`go_back(**expectation) -> ActionResult` — Browser back.
+`wait(ms=1000, selector=None, state="visible") -> ActionResult` — Wait for time or element. state: visible|hidden|attached|detached.
+`extract_content(max_length=None, scope=None) -> str` — Compressed DOM (AX tree + MarkGrab markdown).
+`browse(url, objective, max_steps=None) -> BrowseResult` — Agentic multi-step browse with LLM planning.
+`close() -> None` — Close session and browser.
+## Result Types
+### SnapshotResult
+| Field | Type | Description |
+|-------|------|-------------|
+| tree_text | str | AX tree with [ref=eN] annotations |
+| elements | list[RefElement] | Interactive elements |
+| ref_count | int | Element count |
+| url, title | str | Page URL and title |
+| token_estimate | int | ~len/4 |
+Method: `get_element(ref) -> RefElement|None`
+### RefElement
+Fields: `ref` (e.g. "e1"), `role` (link|button|textbox|...), `name`, `tag`, `value`, `level`, `focused`, `checked`, `expanded`, `selector`.
+### ActionResult
+| Field | Type | Description |
+|-------|------|-------------|
+| success | bool | Action succeeded |
+| action | str | click\|navigate\|type\|scroll\|go_back\|wait\|extract |
+| target | str | Ref ID or URL |
+| url, title | str | Page state after action |
+| snapshot | str\|None | AX tree if requested |
+| content | str\|None | Markdown if requested |
+| error | str\|None | Error message |
+| token_estimate | int | Tokens consumed |
+Method: `to_dict() -> dict`
+### StepRecord
+Fields: `step` (int, 0-based), `action` (str), `target` (str), `url` (str), `summary` (str), `success` (bool).
+### BrowseResult
+| Field | Type | Description |
+|-------|------|-------------|
+| success | bool | Objective achieved |
+| url, title | str | Final page state |
+| content | str | Extracted markdown |
+| snapshot | str | Final AX tree |
+| steps | list[StepRecord] | Action history |
+| total_steps | int | Steps taken |
+| total_tokens | int | Tokens consumed |
+| processing_time_ms | float | Wall-clock ms |
+| error | str\|None | Error if failed |
+| metadata | dict | Extensible |
+Method: `to_dict() -> dict`
+## Browser Management
+`BrowserManager(config?)` — Manages Playwright lifecycle, async context manager.
+Methods: `new_context(**overrides) -> BrowserContext`, `new_page(**overrides) -> Page`, `close()`, `is_running: bool`.
+Module functions: `get_manager(config?) -> BrowserManager` (singleton), `close_manager()`.
+## DOM & Ref System
+`compress_dom(page, ref_map, config?, include_content=False, scope_selector=None) -> str` — Dual-path: Path A = AX tree, Path B = MarkGrab markdown.
+`RefMap` — Bidirectional ref-ID-to-element mapping. Methods: `clear()`, `assign(role, name, **attrs) -> RefElement`, `get(ref) -> RefElement|None`, `all_elements() -> list`, `count: int`, `is_interactive(role)`, `is_landmark(role)`.
+Interactive roles: link, button, textbox, checkbox, radio, combobox, listbox, option, menuitem, tab, switch, slider, spinbutton, searchbox, menuitemcheckbox, menuitemradio, treeitem.
+Landmark roles: heading, navigation, main, banner, contentinfo, complementary, form, region, dialog, alertdialog, alert.
+`resolve_ref(page, ref, ref_map) -> Locator|None` — 4-strategy fallback: role selector -> CSS -> text -> None.
+`take_snapshot(page, ref_map, config?) -> SnapshotResult` — AX tree via Playwright aria_snapshot(), adds [ref=eN] annotations.
+## LLM Providers
+Abstract `LLMProvider`: `chat(messages, temperature=0.0, max_tokens=1024) -> str`, `is_available() -> bool`, `name: str`, `model: str`, `plan_action(system_prompt, context, history, objective) -> dict`.
+`VLLMProvider(base_url, model, api_key?, timeout_s=60)` — vLLM OpenAI-compat. Sends `enable_thinking: false`.
+`OllamaProvider(base_url="http://localhost:11434", model="qwen2.5:14b", timeout_s=60)` — Ollama /api/chat.
+`OpenAICompatProvider(base_url, model, api_key?, timeout_s=60)` — Generic OpenAI-compat.
+`get_provider(config?) -> LLMProvider` — Factory from LLMConfig.
+## JSON Parser
+`parse_action_json(text) -> dict` — 5-stage fallback: direct parse -> code block -> brace boundary -> key-value cleanup -> regex. Raises ValueError if all fail.
+Valid actions: click, type, scroll, navigate, go_back, wait, extract, done, fail.
+## Prompt System
+`build_action_prompt(objective, snapshot, history="", cached_hint="") -> list[dict]` — Builds system+user messages for LLM action planning (~400 token system prompt).
+## Agent Intelligence
+`PatternCache(cache_dir="~/.cache/browsegrab")` — Domain-based success pattern file cache (patterns.json, max 20/domain).
+Methods: `lookup(url, objective) -> list[dict]|None`, `store(url, objective, actions)`, `get_hint(url, objective) -> str`, `clear(domain?)`.
+`compress_history(steps, max_entries=5) -> str` — Compact history: first + summarized middle + last N (~100-300 tokens).
+`LoopGuard(window_size=3, max_repeats=2)` — Sliding-window loop detection. Methods: `record(action, target="")`, `is_looping() -> bool`, `get_escape_hint() -> str`, `reset()`.
+## MCP Server
+Entry: `browsegrab-mcp` (stdio). 8 tools, all return JSON strings.
+`browser_navigate(url, wait_until="domcontentloaded")` — Navigate, return snapshot.
+`browser_click(ref)` — Click by ref ID.
+`browser_type(ref, text, clear=True, submit=False)` — Type into input.
+`browser_snapshot(interactive_only=False, max_length=5000)` — Get AX tree.
+`browser_scroll(direction="down", amount=500, ref=None)` — Scroll page/element.
+`browser_extract_content(scope=None, max_length=3000)` — Extract markdown.
+`browser_go_back()` — Browser back.
+`browser_wait(ms=1000, selector=None, state="visible")` — Wait for time/element.
+## CLI
+Entry: `browsegrab` (requires [cli] extra).
+`browsegrab snapshot <url> [-f tree|text|json] [-i]` — AX tree snapshot.
+`browsegrab extract <url> [-s SELECTOR] [-j]` — Extract compressed DOM.
+`browsegrab browse <url> <objective> [-n STEPS] [-j]` — Agentic browse.
+## LLM Action Schema
 ```
-pip install browsegrab          # core (Playwright + httpx)
-pip install browsegrab[cli]     # CLI (click + rich)
-pip install browsegrab[mcp]     # MCP server (fastmcp)
-pip install browsegrab[content] # content extraction (markgrab)
-pip install browsegrab[all]     # everything
+{"action":"click","ref":"eN"}
+{"action":"type","ref":"eN","text":"...","submit":true|false}
+{"action":"scroll","direction":"down|up|left|right","amount":500}
+{"action":"navigate","url":"..."}
+{"action":"go_back"}
+{"action":"wait","ms":1000}
+{"action":"extract"}
+{"action":"done","result":"..."}
+{"action":"fail","reason":"..."}
 ```
-
-After installing, install Playwright browsers:
-```
-playwright install chromium
-```
-
-**Requirements**: Python >= 3.11, playwright >= 1.49, httpx >= 0.28
-
-**Optional dependencies**:
-- `markgrab >= 0.1.2` — content extraction (markdown conversion)
-- `fastmcp >= 2.0` — MCP server
-- `click >= 8.0` + `rich >= 13.0` — CLI interface
-
-## Quick Use
-
-### CLI
-
-```bash
-browsegrab snapshot https://example.com                          # accessibility tree snapshot
-browsegrab snapshot https://example.com -f json                  # JSON output
-browsegrab snapshot https://example.com -i                       # interactive elements only
-browsegrab extract https://example.com                           # extract content as markdown
-browsegrab extract https://example.com -s "main"                 # scoped extraction
-browsegrab extract https://example.com -j                        # JSON output
-browsegrab browse https://example.com "find the pricing page"    # agentic browse
-browsegrab browse https://example.com "find pricing" -n 5        # max 5 steps
-browsegrab browse https://example.com "find pricing" -j          # JSON output
-```
-
-### Python
-
-```python
-from browsegrab import BrowseGrabConfig, BrowseSession
-
-async with BrowseSession(BrowseGrabConfig.from_env()) as session:
-    await session.navigate("https://example.com")
-    snap = await session.snapshot()          # SnapshotResult
-    content = await session.extract_content() # markdown string
-    result = await session.browse("https://example.com", "find pricing")  # BrowseResult
-```
-
-### MCP
-
-Server: `browsegrab-mcp` (stdio transport)
-Tools: `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_scroll`, `browser_extract_content`, `browser_go_back`, `browser_wait`
-
-## API Reference
-
-### Configuration
-
-#### `BrowseGrabConfig`
-
-Top-level configuration aggregating all subsystem configs. All configs can be loaded from environment variables via `from_env()`.
-
-```python
-@dataclass
-class BrowseGrabConfig:
-    browser: BrowserConfig = field(default_factory=BrowserConfig)
-    llm: LLMConfig = field(default_factory=LLMConfig)
-    snapshot: SnapshotConfig = field(default_factory=SnapshotConfig)
-    agent: AgentConfig = field(default_factory=AgentConfig)
-
-    @classmethod
-    def from_env(cls) -> BrowseGrabConfig
-```
-
-#### `BrowserConfig`
-
-Playwright browser configuration.
-
-```python
-@dataclass
-class BrowserConfig:
-    headless: bool = True                   # BROWSEGRAB_BROWSER_HEADLESS
-    timeout_ms: int = 30_000                # BROWSEGRAB_BROWSER_TIMEOUT_MS
-    viewport_width: int = 1280              # BROWSEGRAB_BROWSER_VIEWPORT_WIDTH
-    viewport_height: int = 720              # BROWSEGRAB_BROWSER_VIEWPORT_HEIGHT
-    user_agent: str | None = None           # BROWSEGRAB_BROWSER_USER_AGENT
-    locale: str = "en-US"                   # BROWSEGRAB_BROWSER_LOCALE
-    ignore_https_errors: bool = False       # BROWSEGRAB_BROWSER_IGNORE_HTTPS_ERRORS
-
-    @classmethod
-    def from_env(cls) -> BrowserConfig
-```
-
-#### `LLMConfig`
-
-LLM provider configuration.
-
-```python
-@dataclass
-class LLMConfig:
-    provider: Literal["vllm", "ollama", "openai"] = "vllm"  # BROWSEGRAB_LLM_PROVIDER
-    base_url: str = "http://localhost:8000/v1"               # BROWSEGRAB_LLM_BASE_URL
-    model: str = "Qwen/Qwen3.5-32B-AWQ"                     # BROWSEGRAB_LLM_MODEL
-    api_key: str | None = None                               # BROWSEGRAB_LLM_API_KEY
-    timeout_s: int = 60                                      # BROWSEGRAB_LLM_TIMEOUT_S
-    max_retries: int = 2                                     # BROWSEGRAB_LLM_MAX_RETRIES
-    temperature: float = 0.0                                 # BROWSEGRAB_LLM_TEMPERATURE
-    max_tokens: int = 1024                                   # BROWSEGRAB_LLM_MAX_TOKENS
-
-    @classmethod
-    def from_env(cls) -> LLMConfig
-```
-
-#### `SnapshotConfig`
-
-Snapshot and DOM compression configuration.
-
-```python
-@dataclass
-class SnapshotConfig:
-    max_snapshot_length: int = 5000         # BROWSEGRAB_SNAPSHOT_MAX_LENGTH
-    max_content_length: int = 3000          # BROWSEGRAB_SNAPSHOT_MAX_CONTENT_LENGTH
-    include_links: bool = True              # BROWSEGRAB_SNAPSHOT_INCLUDE_LINKS
-    filter_interactive_only: bool = False   # BROWSEGRAB_SNAPSHOT_INTERACTIVE_ONLY
-
-    @classmethod
-    def from_env(cls) -> SnapshotConfig
-```
-
-#### `AgentConfig`
-
-Agent loop configuration.
-
-```python
-@dataclass
-class AgentConfig:
-    max_steps: int = 10                     # BROWSEGRAB_AGENT_MAX_STEPS
-    history_max_entries: int = 5            # BROWSEGRAB_AGENT_HISTORY_MAX
-    cache_dir: str = "~/.cache/browsegrab"  # BROWSEGRAB_AGENT_CACHE_DIR
-    enable_cache: bool = True               # BROWSEGRAB_AGENT_ENABLE_CACHE
-    loop_detection_window: int = 3          # BROWSEGRAB_AGENT_LOOP_WINDOW
-
-    @classmethod
-    def from_env(cls) -> AgentConfig
-```
-
-### BrowseSession
-
-Main orchestrator: URL -> browser actions -> LLM planning -> results. Supports async context manager.
-
-```python
-class BrowseSession:
-    def __init__(
-        self,
-        config: BrowseGrabConfig | None = None,
-        manager: BrowserManager | None = None,
-    ) -> None
-```
-
-**Parameters**:
-- `config` (`BrowseGrabConfig | None`): Configuration. Defaults to `BrowseGrabConfig()` with all default values.
-- `manager` (`BrowserManager | None`): Existing browser manager to reuse. If None, creates and owns a new one.
-
-#### `BrowseSession.navigate`
-
-```python
-async def navigate(self, url: str, **expectation: Any) -> ActionResult
-```
-
-Navigate to a URL.
-
-- `url` (`str`): Target URL.
-- `**expectation`: Optional keyword args passed to post-action handler (e.g. `include_snapshot=True`).
-- **Returns**: `ActionResult` with success status, URL, title, optional snapshot.
-
-#### `BrowseSession.snapshot`
-
-```python
-async def snapshot(self) -> SnapshotResult
-```
-
-Take an accessibility tree snapshot of the current page. Clears and rebuilds the internal RefMap.
-
-- **Returns**: `SnapshotResult` with tree text, elements list, ref count, URL, title, token estimate.
-
-#### `BrowseSession.click`
-
-```python
-async def click(self, ref: str, **expectation: Any) -> ActionResult
-```
-
-Click an element by ref ID.
-
-- `ref` (`str`): Element ref ID from snapshot (e.g. "e1", "e5").
-- `**expectation`: Optional post-action options.
-- **Returns**: `ActionResult`.
-
-#### `BrowseSession.type`
-
-```python
-async def type(
-    self,
-    ref: str,
-    text: str,
-    clear: bool = True,
-    submit: bool = False,
-    **expectation: Any,
-) -> ActionResult
-```
-
-Type text into an element.
-
-- `ref` (`str`): Element ref ID for the input field.
-- `text` (`str`): Text to type.
-- `clear` (`bool`): Clear existing content before typing. Default `True`.
-- `submit` (`bool`): Press Enter after typing. Default `False`.
-- `**expectation`: Optional post-action options.
-- **Returns**: `ActionResult`.
-
-#### `BrowseSession.scroll`
-
-```python
-async def scroll(
-    self,
-    direction: str = "down",
-    amount: int = 500,
-    ref: str | None = None,
-    **expectation: Any,
-) -> ActionResult
-```
-
-Scroll the page or a specific element.
-
-- `direction` (`str`): One of "up", "down", "left", "right". Default "down".
-- `amount` (`int`): Scroll amount in pixels. Default 500.
-- `ref` (`str | None`): Optional element ref to scroll into view first.
-- `**expectation`: Optional post-action options.
-- **Returns**: `ActionResult`.
-
-#### `BrowseSession.go_back`
-
-```python
-async def go_back(self, **expectation: Any) -> ActionResult
-```
-
-Navigate back in browser history.
-
-- `**expectation`: Optional post-action options.
-- **Returns**: `ActionResult`.
-
-#### `BrowseSession.wait`
-
-```python
-async def wait(
-    self,
-    ms: int = 1000,
-    selector: str | None = None,
-    state: str = "visible",
-) -> ActionResult
-```
-
-Wait for time or element state.
-
-- `ms` (`int`): Milliseconds to wait (or timeout for selector). Default 1000.
-- `selector` (`str | None`): CSS selector to wait for.
-- `state` (`str`): Target element state: "visible", "hidden", "attached", "detached". Default "visible".
-- **Returns**: `ActionResult`.
-
-#### `BrowseSession.extract_content`
-
-```python
-async def extract_content(
-    self,
-    max_length: int | None = None,
-    scope: str | None = None,
-) -> str
-```
-
-Extract page content as compressed DOM (AX tree + optional MarkGrab markdown).
-
-- `max_length` (`int | None`): Override max content length.
-- `scope` (`str | None`): CSS selector to limit extraction scope (e.g. "main", ".article").
-- **Returns**: `str` — compressed DOM text with page info header and content.
-
-#### `BrowseSession.browse`
-
-```python
-async def browse(
-    self,
-    url: str,
-    objective: str,
-    max_steps: int | None = None,
-) -> BrowseResult
-```
-
-Agentic browsing: LLM plans and executes actions to achieve an objective.
-
-- `url` (`str`): Starting URL.
-- `objective` (`str`): What the agent should accomplish.
-- `max_steps` (`int | None`): Override max steps (default from `config.agent.max_steps`, which is 10).
-- **Returns**: `BrowseResult` with extracted content, action history, step count, token usage, timing.
-
-#### `BrowseSession.close`
-
-```python
-async def close(self) -> None
-```
-
-Close the session, browser context, and optionally the browser manager (if owned by this session).
-
-### Result Types
-
-#### `SnapshotResult`
-
-```python
-@dataclass
-class SnapshotResult:
-    tree_text: str                              # formatted AX tree string with [ref=eN] annotations
-    elements: list[RefElement] = []             # all interactive elements found
-    ref_count: int = 0                          # number of interactive elements
-    url: str = ""                               # current page URL
-    title: str = ""                             # current page title
-    token_estimate: int = 0                     # estimated token count (~len/4)
-
-    def get_element(self, ref: str) -> RefElement | None
-        # Look up element by ref ID (e.g. "e3")
-```
-
-#### `RefElement`
-
-```python
-@dataclass
-class RefElement:
-    ref: str            # e.g. "e1", "e2"
-    role: str           # e.g. "link", "button", "textbox"
-    name: str           # accessible name
-    tag: str = ""       # HTML tag name
-    value: str = ""     # current value (for inputs)
-    level: int = 0      # heading level
-    focused: bool = False
-    checked: bool | None = None    # for checkboxes
-    expanded: bool | None = None   # for accordions
-    selector: str = ""             # resolved CSS selector
-```
-
-#### `ActionResult`
-
-```python
-@dataclass
-class ActionResult:
-    success: bool                       # whether the action succeeded
-    action: str                         # "click", "navigate", "type", "scroll", "go_back", "wait", "extract"
-    target: str = ""                    # ref ID or URL
-    url: str = ""                       # current page URL after action
-    title: str = ""                     # current page title after action
-    snapshot: str | None = None         # AX tree text if requested via expectation
-    content: str | None = None          # markdown content if requested
-    error: str | None = None            # error message on failure
-    token_estimate: int = 0             # estimated tokens consumed
-
-    def to_dict(self) -> dict[str, Any]
-        # Convert to dict, omitting None values
-```
-
-#### `StepRecord`
-
-```python
-@dataclass
-class StepRecord:
-    step: int           # step number (0-based: 0 = initial navigate)
-    action: str         # action name
-    target: str = ""    # ref ID or URL
-    url: str = ""       # page URL after action
-    summary: str = ""   # brief summary or error
-    success: bool = True
-```
-
-#### `BrowseResult`
-
-```python
-@dataclass
-class BrowseResult:
-    success: bool                           # whether the objective was achieved
-    url: str = ""                           # final page URL
-    title: str = ""                         # final page title
-    content: str = ""                       # extracted markdown content
-    snapshot: str = ""                      # final AX tree snapshot
-    steps: list[StepRecord] = []            # full action history
-    total_steps: int = 0                    # total steps taken
-    total_tokens: int = 0                   # estimated total tokens consumed
-    processing_time_ms: float = 0.0         # wall-clock time in milliseconds
-    error: str | None = None                # error message if failed
-    metadata: dict[str, Any] = {}           # extensible metadata
-
-    def to_dict(self) -> dict[str, Any]
-        # Convert to serializable dict (steps serialized as list of dicts)
-```
-
-### Browser Management
-
-#### `BrowserManager`
-
-Manages Playwright browser lifecycle with async context manager support.
-
-```python
-class BrowserManager:
-    def __init__(self, config: BrowserConfig | None = None) -> None
-
-    async def new_context(self, **overrides: object) -> BrowserContext
-        # Create a new browser context with configured defaults.
-        # overrides are passed to playwright browser.new_context().
-
-    async def new_page(self, **context_overrides: object) -> Page
-        # Create a new page in a fresh context.
-
-    async def close(self) -> None
-        # Close browser and Playwright.
-
-    @property
-    def is_running(self) -> bool
-        # Check if browser is active and connected.
-```
-
-**Module-level functions**:
-
-```python
-async def get_manager(config: BrowserConfig | None = None) -> BrowserManager
-    # Get or create the default BrowserManager singleton.
-
-async def close_manager() -> None
-    # Close the default BrowserManager singleton.
-```
-
-### DOM Compression
-
-#### `compress_dom`
-
-```python
-async def compress_dom(
-    page: Page,
-    ref_map: RefMap,
-    config: SnapshotConfig | None = None,
-    include_content: bool = False,
-    scope_selector: str | None = None,
-) -> str
-```
-
-Produce a compressed DOM representation for LLM consumption. Combines Path A (accessibility tree) and Path B (MarkGrab markdown, on-demand).
-
-- `page` (`Page`): Playwright page.
-- `ref_map` (`RefMap`): RefMap to populate (cleared and rebuilt).
-- `config` (`SnapshotConfig | None`): Snapshot configuration.
-- `include_content` (`bool`): Whether to include MarkGrab content section. Default `False`.
-- `scope_selector` (`str | None`): CSS selector to limit content extraction scope.
-- **Returns**: `str` — text with `[Page: ...]`, `[URL: ...]`, `[Elements: N interactive]` header, AX tree, and optional `--- Content ---` section.
-
-### Ref System
-
-#### `RefMap`
-
-Bidirectional mapping between ref IDs and accessibility tree elements. Ref IDs follow the pattern `e1`, `e2`, `e3`, ...
-
-```python
-@dataclass
-class RefMap:
-    def clear(self) -> None
-        # Reset the ref map for a new snapshot.
-
-    def assign(self, role: str, name: str, **attrs: Any) -> RefElement
-        # Assign a new ref ID to an element.
-        # attrs: tag, value, level, focused, checked, expanded, selector
-
-    def get(self, ref: str) -> RefElement | None
-        # Look up element by ref ID.
-
-    def all_elements(self) -> list[RefElement]
-        # Return all mapped elements in assignment order.
-
-    @property
-    def count(self) -> int
-        # Number of elements in the map.
-
-    def is_interactive(self, role: str) -> bool
-    def is_landmark(self, role: str) -> bool
-    def should_include(self, role: str) -> bool
-```
-
-**Interactive roles**: link, button, textbox, checkbox, radio, combobox, listbox, option, menuitem, tab, switch, slider, spinbutton, searchbox, menuitemcheckbox, menuitemradio, treeitem
-
-**Landmark roles**: heading, navigation, main, banner, contentinfo, complementary, form, region, dialog, alertdialog, alert
-
-### Selector Resolution
-
-#### `resolve_ref`
-
-```python
-async def resolve_ref(page: Page, ref: str, ref_map: RefMap) -> Locator | None
-```
-
-Resolve a ref ID to a Playwright Locator using 4-strategy fallback.
-
-Strategy order (fastest first):
-1. **Role selector** (ARIA role + name) — ~5ms
-2. **CSS selector** (if stored in RefElement) — ~1ms
-3. **Text selector** (accessible name) — ~10ms
-4. **None** (all strategies failed)
-
-- `page` (`Page`): Current Playwright page.
-- `ref` (`str`): Ref ID (e.g. "e1", "e5").
-- `ref_map` (`RefMap`): Current RefMap with element info.
-- **Returns**: `Locator | None`.
-
-### Snapshot
-
-#### `take_snapshot`
-
-```python
-async def take_snapshot(
-    page: Page,
-    ref_map: RefMap,
-    config: SnapshotConfig | None = None,
-) -> SnapshotResult
-```
-
-Take an accessibility tree snapshot of the page. Uses Playwright's `locator.aria_snapshot()` for compact YAML-like output, then augments interactive elements with `[ref=eN]` annotations.
-
-- `page` (`Page`): Playwright page to snapshot.
-- `ref_map` (`RefMap`): RefMap instance (will be cleared and rebuilt).
-- `config` (`SnapshotConfig | None`): Snapshot configuration.
-- **Returns**: `SnapshotResult` with formatted tree text and ref elements.
-
-### LLM Providers
-
-#### `LLMProvider` (abstract base)
-
-```python
-class LLMProvider(ABC):
-    @abstractmethod
-    async def chat(
-        self,
-        messages: list[dict[str, str]],
-        temperature: float = 0.0,
-        max_tokens: int = 1024,
-    ) -> str
-        # Send chat completion, return response text.
-
-    @abstractmethod
-    async def is_available(self) -> bool
-        # Check if provider endpoint is reachable.
-
-    @property
-    @abstractmethod
-    def name(self) -> str
-        # Provider name ("vllm", "ollama", "openai").
-
-    @property
-    @abstractmethod
-    def model(self) -> str
-        # Model name being used.
-
-    async def plan_action(
-        self,
-        system_prompt: str,
-        context: str,
-        history: str,
-        objective: str,
-    ) -> dict[str, Any]
-        # Convenience method: build messages, call chat, parse JSON response.
-        # Returns parsed action dict (e.g. {"action": "click", "ref": "e5"}).
-```
-
-#### `VLLMProvider`
-
-```python
-class VLLMProvider(LLMProvider):
-    def __init__(
-        self,
-        base_url: str = "http://localhost:8000/v1",
-        model: str = "Qwen/Qwen3.5-32B-AWQ",
-        api_key: str | None = None,
-        timeout_s: int = 60,
-    ) -> None
-```
-
-vLLM OpenAI-compatible endpoint. Sends `chat_template_kwargs: {"enable_thinking": false}` to disable reasoning parser.
-
-#### `OllamaProvider`
-
-```python
-class OllamaProvider(LLMProvider):
-    def __init__(
-        self,
-        base_url: str = "http://localhost:11434",
-        model: str = "qwen2.5:14b",
-        timeout_s: int = 60,
-    ) -> None
-```
-
-Ollama API provider. Uses `/api/chat` endpoint with `stream: false`.
-
-#### `OpenAICompatProvider`
-
-```python
-class OpenAICompatProvider(LLMProvider):
-    def __init__(
-        self,
-        base_url: str = "http://localhost:8000/v1",
-        model: str = "gpt-4",
-        api_key: str | None = None,
-        timeout_s: int = 60,
-    ) -> None
-```
-
-Generic OpenAI-compatible endpoint provider.
-
-#### `get_provider`
-
-```python
-def get_provider(config: LLMConfig | None = None) -> LLMProvider
-```
-
-Factory: create an LLM provider from config. Dispatches based on `config.provider` value ("vllm", "ollama", "openai").
-
-### JSON Parser
-
-#### `parse_action_json`
-
-```python
-def parse_action_json(text: str) -> dict[str, Any]
-```
-
-Parse LLM response into an action dict using 5-stage fallback.
-
-**Stages**:
-1. Direct JSON parse
-2. Code block extraction (`` ```json ... ``` ``)
-3. Brace boundary detection (outermost `{ ... }`)
-4. Key-value cleanup (fix quotes, trailing commas, unquoted keys) + retry
-5. Regex extraction of action/ref/text/url/direction/submit/result/reason/ms fields
-
-- `text` (`str`): Raw LLM response text.
-- **Returns**: `dict[str, Any]` with at least an `"action"` key.
-- **Raises**: `ValueError` if all 5 stages fail.
-
-**Valid actions**: `click`, `type`, `scroll`, `navigate`, `go_back`, `wait`, `extract`, `done`, `fail`
-
-### Prompt System
-
-#### `build_action_prompt`
-
-```python
-def build_action_prompt(
-    objective: str,
-    snapshot: str,
-    history: str = "",
-    cached_hint: str = "",
-) -> list[dict[str, str]]
-```
-
-Build the message list for LLM action planning.
-
-- `objective` (`str`): User's goal.
-- `snapshot` (`str`): Current page AX tree snapshot.
-- `history` (`str`): Compressed action history.
-- `cached_hint` (`str`): Optional hint from success pattern cache.
-- **Returns**: List of message dicts (`[{"role": "system", ...}, {"role": "user", ...}]`).
-
-The system prompt (~400 tokens) instructs the LLM to respond with JSON-only actions using ref IDs.
-
-### Agent Intelligence
-
-#### `PatternCache`
-
-```python
-class PatternCache:
-    def __init__(self, cache_dir: str = "~/.cache/browsegrab") -> None
-
-    def lookup(self, url: str, objective: str) -> list[dict] | None
-        # Look up cached action sequence for domain + objective.
-        # Returns list of action dicts or None.
-
-    def store(self, url: str, objective: str, actions: list[dict]) -> None
-        # Store a successful action sequence. Max 20 entries per domain.
-
-    def get_hint(self, url: str, objective: str) -> str
-        # Get compact hint string for LLM context (up to 5 steps).
-        # Returns empty string if no cache hit.
-
-    def clear(self, domain: str | None = None) -> None
-        # Clear cache for a specific domain or all.
-```
-
-Cache location: `~/.cache/browsegrab/patterns.json`. Domain-based lookup with exact objective matching (case-insensitive).
-
-#### `compress_history`
-
-```python
-def compress_history(steps: list[StepRecord], max_entries: int = 5) -> str
-```
-
-Compress action history into a compact string for LLM context (~100-300 tokens).
-
-Strategy: keep first entry + summarize repeated patterns in middle + keep last N entries.
-
-- `steps` (`list[StepRecord]`): Full step history.
-- `max_entries` (`int`): Maximum entries to include. Default 5.
-- **Returns**: `str` — formatted history text.
-
-#### `LoopGuard`
-
-```python
-@dataclass
-class LoopGuard:
-    window_size: int = 3          # number of recent actions to check
-    max_repeats: int = 2          # repetitions before flagging as loop
-
-    def record(self, action: str, target: str = "") -> None
-        # Record an action for loop detection.
-
-    def is_looping(self) -> bool
-        # Check if recent actions form a repeating pattern.
-        # Detects: (1) same action N times in a row, (2) pattern repetition (A-B-A-B).
-
-    def get_escape_hint(self) -> str
-        # Generate hint text for LLM to break out of the loop.
-
-    def reset(self) -> None
-        # Reset loop guard state.
-```
-
-### MCP Server Tools
-
-The MCP server exposes 8 tools via FastMCP (stdio transport). Start with `browsegrab-mcp`.
-
-#### `browser_navigate`
-
-```python
-async def browser_navigate(url: str, wait_until: str = "domcontentloaded") -> str
-```
-
-Navigate to a URL and return accessibility tree snapshot.
-
-- `url` (`str`): The URL to navigate to.
-- `wait_until` (`str`): When to consider navigation done ("domcontentloaded", "load", "networkidle").
-- **Returns**: JSON string with keys: `success`, `url`, `title`, `snapshot`, `ref_count`, `token_estimate`, `error`.
-
-#### `browser_click`
-
-```python
-async def browser_click(ref: str) -> str
-```
-
-Click an element by its ref ID.
-
-- `ref` (`str`): Element ref ID from the accessibility tree snapshot (e.g. "e1", "e5").
-- **Returns**: JSON string (ActionResult.to_dict()).
-
-#### `browser_type`
-
-```python
-async def browser_type(ref: str, text: str, clear: bool = True, submit: bool = False) -> str
-```
-
-Type text into an input element.
-
-- `ref` (`str`): Element ref ID (e.g. "e3" for a textbox).
-- `text` (`str`): The text to type.
-- `clear` (`bool`): Clear existing content before typing. Default `True`.
-- `submit` (`bool`): Press Enter after typing. Default `False`.
-- **Returns**: JSON string (ActionResult.to_dict()).
-
-#### `browser_snapshot`
-
-```python
-async def browser_snapshot(interactive_only: bool = False, max_length: int = 5000) -> str
-```
-
-Get the current page accessibility tree snapshot.
-
-- `interactive_only` (`bool`): Only show interactive elements (buttons, links, inputs). Default `False`.
-- `max_length` (`int`): Maximum snapshot text length. Default 5000.
-- **Returns**: JSON string with keys: `url`, `title`, `ref_count`, `token_estimate`, `snapshot`.
-
-#### `browser_scroll`
-
-```python
-async def browser_scroll(direction: str = "down", amount: int = 500, ref: str | None = None) -> str
-```
-
-Scroll the page or a specific element.
-
-- `direction` (`str`): Scroll direction ("up", "down", "left", "right"). Default "down".
-- `amount` (`int`): Scroll amount in pixels. Default 500.
-- `ref` (`str | None`): Optional element ref ID to scroll into view first.
-- **Returns**: JSON string (ActionResult.to_dict()).
-
-#### `browser_extract_content`
-
-```python
-async def browser_extract_content(scope: str | None = None, max_length: int = 3000) -> str
-```
-
-Extract page content as clean markdown (via MarkGrab if available).
-
-- `scope` (`str | None`): CSS selector to limit extraction scope (e.g. "main", ".article").
-- `max_length` (`int`): Maximum content length. Default 3000.
-- **Returns**: JSON string with key: `content`.
-
-#### `browser_go_back`
-
-```python
-async def browser_go_back() -> str
-```
-
-Navigate back in browser history.
-
-- **Returns**: JSON string (ActionResult.to_dict()).
-
-#### `browser_wait`
-
-```python
-async def browser_wait(ms: int = 1000, selector: str | None = None, state: str = "visible") -> str
-```
-
-Wait for a specified time or until an element reaches a state.
-
-- `ms` (`int`): Milliseconds to wait (or timeout for selector wait). Default 1000.
-- `selector` (`str | None`): CSS selector to wait for.
-- `state` (`str`): Target element state ("visible", "hidden", "attached", "detached"). Default "visible".
-- **Returns**: JSON string (ActionResult.to_dict()).
-
-### CLI Commands
-
-Entry point: `browsegrab` (requires `pip install browsegrab[cli]`)
-
-#### `browsegrab snapshot <url>`
-
-Take an accessibility tree snapshot of a URL.
-
-- `--format, -f` (`tree|text|json`): Output format. Default "tree".
-- `--interactive-only, -i`: Show only interactive elements.
-
-#### `browsegrab extract <url>`
-
-Extract page content as compressed DOM.
-
-- `--scope, -s` (`str`): CSS selector to scope content extraction.
-- `--json-output, -j`: Output as JSON.
-
-#### `browsegrab browse <url> <objective>`
-
-Agentic browse: LLM plans actions to achieve an objective.
-
-- `--steps, -n` (`int`): Max steps. Default 10 (from config).
-- `--json-output, -j`: Output as JSON.
-
 ## Examples
-
-### Basic Snapshot
-
+### Snapshot + Manual Browsing
 ```python
-import asyncio
 from browsegrab import BrowseGrabConfig, BrowseSession
-
-async def main():
-    config = BrowseGrabConfig()
-    async with BrowseSession(config) as session:
-        await session.navigate("https://news.ycombinator.com")
-        snap = await session.snapshot()
-
-        print(f"Page: {snap.title}")
-        print(f"URL: {snap.url}")
-        print(f"Interactive elements: {snap.ref_count}")
-        print(f"Token estimate: {snap.token_estimate}")
-        print(snap.tree_text[:500])
-
-        # Look up a specific element
-        el = snap.get_element("e1")
-        if el:
-            print(f"e1: {el.role} '{el.name}'")
-
-asyncio.run(main())
+async with BrowseSession(BrowseGrabConfig()) as s:
+    await s.navigate("https://news.ycombinator.com")
+    snap = await s.snapshot()
+    print(f"{snap.ref_count} elements, ~{snap.token_estimate} tokens")
+    await s.type("e3", "browsegrab", submit=True)
+    await s.wait(ms=2000)
+    await s.click("e5")
+    content = await s.extract_content()
 ```
-
-### Manual Step-by-Step Browsing
-
+### Agentic Browse
 ```python
-import asyncio
-from browsegrab import BrowseGrabConfig, BrowseSession
-
-async def main():
-    config = BrowseGrabConfig.from_env()
-    async with BrowseSession(config) as session:
-        # Navigate
-        result = await session.navigate("https://github.com")
-        print(f"Navigated: {result.url}")
-
-        # Take snapshot to see available elements
-        snap = await session.snapshot()
-        print(snap.tree_text[:1000])
-
-        # Type into search box (find the right ref from snapshot)
-        await session.type("e3", "browsegrab", submit=True)
-
-        # Wait for results
-        await session.wait(ms=2000)
-
-        # Take another snapshot
-        snap = await session.snapshot()
-        print(snap.tree_text[:1000])
-
-        # Click a result
-        await session.click("e5")
-
-        # Extract content
-        content = await session.extract_content()
-        print(content[:500])
-
-asyncio.run(main())
-```
-
-### Agentic Browsing with Custom Config
-
-```python
-import asyncio
 from browsegrab import BrowseGrabConfig, BrowseSession
 from browsegrab.config import LLMConfig, AgentConfig
-
-async def main():
-    config = BrowseGrabConfig(
-        llm=LLMConfig(
-            provider="ollama",
-            base_url="http://localhost:11434",
-            model="qwen2.5:14b",
-            temperature=0.0,
-            max_tokens=512,
-        ),
-        agent=AgentConfig(
-            max_steps=15,
-            history_max_entries=3,
-            loop_detection_window=4,
-        ),
-    )
-
-    async with BrowseSession(config) as session:
-        result = await session.browse(
-            url="https://docs.python.org",
-            objective="Find the documentation for asyncio.run",
-            max_steps=10,
-        )
-
-        print(f"Success: {result.success}")
-        print(f"Steps taken: {result.total_steps}")
-        print(f"Tokens used: {result.total_tokens}")
-        print(f"Time: {result.processing_time_ms:.0f}ms")
-
-        if result.error:
-            print(f"Error: {result.error}")
-
-        if result.content:
-            print("--- Content ---")
-            print(result.content[:1000])
-
-        # Inspect step history
-        for step in result.steps:
-            status = "OK" if step.success else "FAIL"
-            print(f"  [{status}] Step {step.step}: {step.action} -> {step.target}")
-
-asyncio.run(main())
-```
-
-### Scoped Content Extraction
-
-```python
-import asyncio
-from browsegrab import BrowseGrabConfig, BrowseSession
-
-async def main():
-    async with BrowseSession(BrowseGrabConfig()) as session:
-        await session.navigate("https://example.com/blog/article")
-
-        # Extract only the main article content
-        content = await session.extract_content(scope="article.post-content")
-        print(content)
-
-        # Extract just the sidebar
-        sidebar = await session.extract_content(scope="aside.sidebar")
-        print(sidebar)
-
-asyncio.run(main())
-```
-
-### Using BrowserManager Directly
-
-```python
-import asyncio
-from browsegrab.browser.manager import BrowserManager
-from browsegrab.browser.snapshot import take_snapshot
-from browsegrab.config import BrowserConfig, SnapshotConfig
-from browsegrab.dom.ref_map import RefMap
-
-async def main():
-    manager = BrowserManager(BrowserConfig(headless=True, viewport_width=1920, viewport_height=1080))
-
-    async with manager:
-        page = await manager.new_page()
-        await page.goto("https://example.com")
-
-        ref_map = RefMap()
-        snap = await take_snapshot(page, ref_map, SnapshotConfig(filter_interactive_only=True))
-        print(f"Found {snap.ref_count} interactive elements")
-
-        for el in snap.elements:
-            print(f"  {el.ref}: [{el.role}] {el.name}")
-
-asyncio.run(main())
-```
-
-### Using the Pattern Cache
-
-```python
-from browsegrab.agent.cache import PatternCache
-
-cache = PatternCache("~/.cache/browsegrab")
-
-# Store a successful workflow
-cache.store(
-    url="https://example.com",
-    objective="find the pricing page",
-    actions=[
-        {"action": "click", "ref": "e3"},
-        {"action": "click", "ref": "e7"},
-        {"action": "done", "result": "Found pricing at /pricing"},
-    ],
+config = BrowseGrabConfig(
+    llm=LLMConfig(provider="ollama", model="qwen2.5:14b"),
+    agent=AgentConfig(max_steps=15),
 )
-
-# Later: look up cached workflow
-actions = cache.lookup("https://example.com/other-page", "find the pricing page")
-if actions:
-    print("Cache hit:", actions)
-
-# Get LLM hint
-hint = cache.get_hint("https://example.com", "find the pricing page")
-print(hint)
-# Output:
-# Previously successful steps:
-# 1. click -> e3
-# 2. click -> e7
-# 3. done -> Found pricing at /pricing
-
-# Clear cache
-cache.clear(domain="example.com")
+async with BrowseSession(config) as s:
+    r = await s.browse("https://docs.python.org", "find asyncio.run docs")
+    print(f"{'OK' if r.success else 'FAIL'} in {r.total_steps} steps, {r.total_tokens} tokens")
 ```
-
-### Custom LLM Provider
-
-```python
-from browsegrab.llm.base import LLMProvider
-
-class MyProvider(LLMProvider):
-    @property
-    def name(self) -> str:
-        return "custom"
-
-    @property
-    def model(self) -> str:
-        return "my-model"
-
-    async def chat(self, messages, temperature=0.0, max_tokens=1024) -> str:
-        # Your LLM call here
-        return '{"action": "done", "result": "completed"}'
-
-    async def is_available(self) -> bool:
-        return True
-```
-
-### MCP Server Integration
-
+### MCP Config
 ```json
-{
-  "mcpServers": {
-    "browsegrab": {
-      "command": "browsegrab-mcp",
-      "env": {
-        "BROWSEGRAB_BROWSER_HEADLESS": "true",
-        "BROWSEGRAB_LLM_PROVIDER": "ollama",
-        "BROWSEGRAB_LLM_MODEL": "qwen2.5:14b"
-      }
-    }
-  }
-}
+{"mcpServers":{"browsegrab":{"command":"browsegrab-mcp","env":{"BROWSEGRAB_LLM_PROVIDER":"ollama","BROWSEGRAB_LLM_MODEL":"qwen2.5:14b"}}}}
 ```
-
-### Loop Detection
-
-```python
-from browsegrab.agent.loop_guard import LoopGuard
-
-guard = LoopGuard(window_size=3, max_repeats=2)
-
-guard.record("click", "e5")
-guard.record("click", "e5")
-guard.record("click", "e5")
-
-print(guard.is_looping())       # True
-print(guard.get_escape_hint())  # WARNING: You are stuck in a loop ...
-
-guard.reset()
-```
-
-## Configuration
-
-All configuration is driven by environment variables or dataclass defaults. Every environment variable uses the `BROWSEGRAB_` prefix.
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BROWSEGRAB_BROWSER_HEADLESS` | `true` | Run browser headless |
-| `BROWSEGRAB_BROWSER_TIMEOUT_MS` | `30000` | Default page timeout (ms) |
-| `BROWSEGRAB_BROWSER_VIEWPORT_WIDTH` | `1280` | Browser viewport width |
-| `BROWSEGRAB_BROWSER_VIEWPORT_HEIGHT` | `720` | Browser viewport height |
-| `BROWSEGRAB_BROWSER_USER_AGENT` | (none) | Custom user agent string |
-| `BROWSEGRAB_BROWSER_LOCALE` | `en-US` | Browser locale |
-| `BROWSEGRAB_BROWSER_IGNORE_HTTPS_ERRORS` | `false` | Ignore HTTPS certificate errors |
-| `BROWSEGRAB_LLM_PROVIDER` | `vllm` | LLM provider: vllm, ollama, openai |
-| `BROWSEGRAB_LLM_BASE_URL` | `http://localhost:8000/v1` | LLM endpoint base URL |
-| `BROWSEGRAB_LLM_MODEL` | `Qwen/Qwen3.5-32B-AWQ` | Model name |
-| `BROWSEGRAB_LLM_API_KEY` | (none) | API key for authenticated endpoints |
-| `BROWSEGRAB_LLM_TIMEOUT_S` | `60` | LLM request timeout (seconds) |
-| `BROWSEGRAB_LLM_MAX_RETRIES` | `2` | Max retries on LLM failure |
-| `BROWSEGRAB_LLM_TEMPERATURE` | `0.0` | Sampling temperature |
-| `BROWSEGRAB_LLM_MAX_TOKENS` | `1024` | Max tokens to generate |
-| `BROWSEGRAB_SNAPSHOT_MAX_LENGTH` | `5000` | Max AX tree snapshot length (chars) |
-| `BROWSEGRAB_SNAPSHOT_MAX_CONTENT_LENGTH` | `3000` | Max content extraction length (chars) |
-| `BROWSEGRAB_SNAPSHOT_INCLUDE_LINKS` | `true` | Include links in snapshot |
-| `BROWSEGRAB_SNAPSHOT_INTERACTIVE_ONLY` | `false` | Show only interactive elements |
-| `BROWSEGRAB_AGENT_MAX_STEPS` | `10` | Max agent steps per browse |
-| `BROWSEGRAB_AGENT_HISTORY_MAX` | `5` | Max history entries for LLM context |
-| `BROWSEGRAB_AGENT_CACHE_DIR` | `~/.cache/browsegrab` | Pattern cache directory |
-| `BROWSEGRAB_AGENT_ENABLE_CACHE` | `true` | Enable success pattern caching |
-| `BROWSEGRAB_AGENT_LOOP_WINDOW` | `3` | Loop detection window size |
-
-### LLM Action JSON Schema
-
-The LLM is instructed to respond with one of these JSON actions per step:
-
-```
-{"action": "click", "ref": "eN"}
-{"action": "type", "ref": "eN", "text": "...", "submit": true|false}
-{"action": "scroll", "direction": "down|up|left|right", "amount": 500}
-{"action": "navigate", "url": "..."}
-{"action": "go_back"}
-{"action": "wait", "ms": 1000}
-{"action": "extract"}
-{"action": "done", "result": "..."}
-{"action": "fail", "reason": "..."}
-```
-
 ## Links
-
-- Docs: https://github.com/QuartzUnit/browsegrab
-- PyPI: https://pypi.org/project/browsegrab/
-- Source: https://github.com/QuartzUnit/browsegrab
-- Issues: https://github.com/QuartzUnit/browsegrab/issues
-- License: MIT
-- Python: >= 3.11
-- Version: 0.1.2
+- [Source](https://github.com/QuartzUnit/browsegrab) | [PyPI](https://pypi.org/project/browsegrab/) | [Issues](https://github.com/QuartzUnit/browsegrab/issues)
+- License: MIT | Python >=3.11 | Version: 0.1.2
