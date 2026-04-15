@@ -1,6 +1,6 @@
 # browsegrab
 
-> [한국어 문서](README.ko.md)
+> [한국어 문서](README.ko.md) · [llms.txt](llms.txt)
 
 > Token-efficient browser agent for local LLMs — Playwright + accessibility tree + MarkGrab, MCP native.
 
