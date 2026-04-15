@@ -57,6 +57,8 @@ dev = [
 Homepage = "https://github.com/QuartzUnit/browsegrab"
 Repository = "https://github.com/QuartzUnit/browsegrab"
 Issues = "https://github.com/QuartzUnit/browsegrab/issues"
+Documentation = "https://github.com/QuartzUnit/browsegrab#readme"
+Changelog = "https://github.com/QuartzUnit/browsegrab/releases"
 
 [project.scripts]
 browsegrab = "browsegrab.__main__:main"
